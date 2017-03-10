@@ -1,0 +1,139 @@
+---
+title: "Human Activity Recognition - Classification prediction"
+author: "Sateesh"
+date: "March 9, 2017"
+output: html_document
+---
+
+## Summary
+
+The human activity recognition research has traditionally focused on discriminating between different weight lifting activities/exercises (sitting, sitting-down, standing, standing-up, walking).The goal of this research is to predict the manner in which we do the exercise based on the data collected thru accelerometer body sensors. More information about the data collection process and the actual research along with complete data can be found at: http://groupware.les.inf.puc-rio.br/har. 
+The dataset has many features extracted using sliding window method using five different sensors. The data also has some statistical features which we can ignore during our predictive analysis. We'll be using multi classification regression algorithms (Random forest and Linear discriminant analysis) to identity the activity class ('classe' in the dataset) based on important features. 
+
+### Data preparation and exploratory analysis.
+
+``` {r rpackages,results='hold',message=FALSE, warning=FALSE}
+library(caret)
+library(tree)
+library(gbm)
+library(ggplot2)
+library(randomForest)
+library(plyr)
+library(MASS)
+```
+
+We will be loading training and test data in order to perform our analysis. The test data don't have the 'classe' feature which we will be predicting based on machine learning algorithm. Before we run our initial analysis, select features with roll,pitch,yaw,total,gyros,accel,magnet for all the sensors.  
+
+```{r dataload,results='hold'}
+ ## data download
+
+urlt<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(url=urlt,destfile='pml-training.csv')
+training<-read.csv("pml-training.csv",stringsAsFactors = F,na.strings=c("#DIV/0!",'',"NA"))  ## convert factors into numbers 
+
+urlts<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(url=urlts,destfile='pml-testing.csv')
+testing<-read.csv("pml-testing.csv",stringsAsFactors = F,na.strings=c("#DIV/0!",'','NA'))
+
+set.seed(330)
+wle.data<-training[,grep("^roll|^pitch|^yaw|^total|^gyros|^accel|^magnet|^classe",names(training))]
+wle.data$classe<-as.factor(wle.data$classe)
+str(wle.data)
+
+```
+ 
+ 
+### Fitting randomforest model
+We'll first fit multiclassification tree model using randomforest. We use model formula classe~. with ntree=50 to find the most important factors which describes the most variance in the data. (we can also use pca to reduce the dimension). By default, randomforest will use leave-one-out cross validation test via out-of-bag (OOB) testing.
+```{r rfmodel}
+##  find important columns using rf
+trainIndex<-createDataPartition(wle.data$classe,p=.7,list=F)
+rffit<-randomForest(classe~.,data=wle.data[trainIndex,],importance=T,prox=T, ntree=50)
+print(rffit)
+``` 
+
+Plot the important factors that contribute most to the variance.
+
+```{r plotq1,results='hold',warning=FALSE}
+varImpPlot(rffit)
+ 
+```
+Based on the plot, select first 34 important factors which explains 99% of the data variance. Plot a sample scatter plot for the first 6 important factors.
+
+```{r plotq2,results='hold',warning=FALSE}
+imp<-as.data.frame(sort(rffit$importance[,1],decreasing = T))
+welcols<-as.vector(rownames(imp)[1:34])
+wle.data.imp<-subset(wle.data,select=c(welcols,"classe"))
+smp<-sample(1:nrow(wle.data.imp),2000)
+plot(wle.data.imp[smp,welcols[1:6]],col=wle.data.imp[smp,]$classe)
+```
+
+### Final randomforst fit with important factors.
+Now, lets plot the final randomforest model by including the important factors. We will use ntree=200 to improve OOB error which is our cross validation. Train the model on 70% of the data and verify the error rate/accuracy on 30% before we finally use the model to test against the 20 test samples. 
+
+``` {r rfmodel2}
+# train the model with training set
+rffit<-randomForest(classe~.,data=wle.data.imp[trainIndex,],importance=T,prox=T, ntree=200,do.trace=50)
+print(rffit)
+## predict/fit using test set.
+rfpred<-predict(rffit,newdata = wle.data.imp[-trainIndex,])
+tbl<-confusionMatrix(wle.data.imp[-trainIndex,]$classe,rfpred)$table
+
+conftbl<-function(tab) {
+  conCV1 <- rbind(tab[1, ]/sum(tab[1, ]), tab[2, ]/sum(tab[2, ]),
+                  tab[3, ]/sum(tab[3, ]),tab[4, ]/sum(tab[4, ]),
+                  tab[5, ]/sum(tab[5, ])) 
+  
+  dimnames(conCV1) <- list(Actual = c("A", "B","C","D","E"), "Predicted" = c("A","B","C","D","E"))
+  print(round(conCV1, 3))
+}
+tbl
+conftbl(tbl)
+accuracy<-mean(rfpred==wle.data.imp[-trainIndex,]$classe)
+```
+
+The model accuracy rate is `r accuracy` 
+
+### Testing with test data
+
+Using the final random forest model, now we'll test the 20 test samples to predict the activities/classe. 
+
+```{r finaltest}
+## test the fit
+test.data<-testing[,grep("^roll|^pitch|^yaw|^total|^gyros|^accel|^magnet|^classe",names(testing))]
+test.data.imp<-subset(test.data,select=c(welcols))
+rftestpred<-predict(rffit,newdata = test.data.imp)
+rftestpred
+```
+
+## Conclusion
+The random forest model correctly identifies the activity based on the features form the sensor data with almost `r accuracy` accuracy. 
+
+## Appendix.
+Quadratic linear discriminant analysis will also provide accurate prediction. Here is the R code to fit the model and predict the test data. 
+
+```{r qdacode}
+###  qda fit
+qdafit.cv<-qda(classe~.,wle.data.imp,CV=TRUE)
+tab<-table(wle.data.imp$classe,qdafit.cv$class)
+cm<-confusionMatrix(wle.data.imp$classe,qdafit.cv$class)
+cm$table
+conftbl(cm$table)
+# WITHOUT CV
+qdafit<-qda(classe~.,data=wle.data.imp[trainIndex,])
+har.qda.values <- predict(qdafit)
+
+# test with hold hout data.
+qdapred<-predict(qdafit,wle.data.imp[-trainIndex,])
+tbl<-confusionMatrix(wle.data.imp[-trainIndex,]$classe,qdapred$class)$table
+mean(wle.data.imp[-trainIndex,]$classe==qdapred$class)
+conftbl(tbl)
+## test dataset
+qdatestpred<-predict(qdafit,newdata = test.data)
+qdatestpred$class
+qdatestpred$class == rftestpred
+```
+
+```{r rmdata}
+#rm(wle.data,wle.data.imp,training)
+```
